@@ -27,8 +27,7 @@ class FeatureSelector():
     Notes
     --------
     
-        - All 5 operations can be run with the `identify_all` method.
-        - If using feature importances, one-hot encoding is used for categorical variables which creates new columns
+        - All operations can be run with the `run_all` method.
     
     """
     def __init__(self, data, label, k=100):
@@ -39,6 +38,14 @@ class FeatureSelector():
         self.feature_name = data.columns
         
     def cor_selector(self):
+        """Pearson Correlation
+        Return
+        --------
+        cor_support: list
+            Boolean array with length equals number of X columns. True is for selected feature
+        cor_feature: list
+            Array of selected features
+        """
         cor_list = []
         # calculate the correlation with y for each feature
         for i in self.X.columns.tolist():
@@ -51,6 +58,14 @@ class FeatureSelector():
         return cor_support, cor_feature
     
     def chi_selector(self):
+        """Chi^2 selected K best
+        Return
+        --------
+        chi_support: list
+            Boolean array with length equals number of X columns. True is for selected feature
+        chi_feature: list
+            Array of selected features
+        """
         chi_selector = SelectKBest(chi2, k=self.k)
         chi_selector.fit(self.X_norm, self.y)
         chi_support = chi_selector.get_support()
@@ -58,6 +73,14 @@ class FeatureSelector():
         return chi_support, chi_feature
     
     def rfe_selector(self, estimator=LogisticRegression(), params=None):
+        """RFE selected with default estimator LogisticRegression
+        Return
+        --------
+        rfe_support: list
+            Boolean array with length equals number of X columns. True is for selected feature
+        rfe_feature: list
+            Array of selected features
+        """
         if params is None:
             params={
                 "n_features_to_select": self.k, 
@@ -70,7 +93,14 @@ class FeatureSelector():
         return rfe_support, rfe_feature
     
     def embeded_selector(self, estimator=LogisticRegression(penalty="l1", solver='liblinear')):
-        #estimator could be RandomForestClassifier, LGBMClassifier
+        """Embeded selection with default estimator LogisticRegression. Estimator could be RandomForestClassifier, LGBMClassifier
+        Return
+        --------
+        embeded_support: list
+            Boolean array with length equals number of X columns. True is for selected feature
+        embeded_feature: list
+            Array of selected features
+        """
         embeded_selector = SelectFromModel(estimator, threshold='1.25*median')
         embeded_selector.fit(self.X_norm, self.y)
         embeded_support = embeded_selector.get_support()
@@ -78,6 +108,12 @@ class FeatureSelector():
         return embeded_support, embeded_feature
     
     def run_all(self):
+        """Embeded selection with default estimator LogisticRegression. Estimator could be RandomForestClassifier, LGBMClassifier
+        Return
+        --------
+        feature_selection_df: pandas.DataFrame
+            DataFrame after running all feature selectors sort by most selected feature
+        """
         from sklearn.ensemble import RandomForestClassifier
         from lightgbm import LGBMClassifier
         # put all selection together
