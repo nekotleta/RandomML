@@ -108,7 +108,7 @@ class FeatureSelector():
         return embeded_support, embeded_feature
     
     def run_all(self):
-        """Embeded selection with default estimator LogisticRegression. Estimator could be RandomForestClassifier, LGBMClassifier
+        """Run all functions
         Return
         --------
         feature_selection_df: pandas.DataFrame
