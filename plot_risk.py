@@ -72,7 +72,10 @@ def plot_risk_categorical(df, target, columns_to_show=None, date_column=None,
     for c in columns_to_show:
         #general statistic
         print(c + " risk's stats")
-        print(df[df[target] == bad][c].value_counts() / df[c].value_counts())
+        stats = pd.DataFrame(data = {"values": df[c].value_counts(),
+                                    "num_incidents": df[df[target] == bad][c].value_counts(),
+                                    "risk": df[df[target] == bad][c].value_counts() / df[c].value_counts()})
+        print(stats.to_string())
         
         try:
             result = {}
