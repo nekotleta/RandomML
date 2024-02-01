@@ -1,55 +1,52 @@
+from typing import Any, Final, Optional, Iterable, Tuple, Union, List, Dict
+
+import numpy as np
 import pandas as pd
 import scipy.stats as stats
-import warnings
-import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
-import os
 
-warnings.filterwarnings("ignore")
-os.getcwd()
 
-class Binning(BaseEstimator, TransformerMixin):
+class BinningResult:
+    def __init__(self, bins: Iterable[int], column: str, sign: bool):
+        self.bins: Final[Iterable[int]] = bins
+        self.column: Final[str] = column
+        self.sign: Final[bool] = sign
 
-    def __init__(self, y, n_threshold, y_threshold, p_threshold, sign=False):
-        self.n_threshold = n_threshold
-        self.y_threshold = y_threshold
-        self.p_threshold = p_threshold
-        self.y = y
-        self.sign = sign
+    def transform(self, data: pd.DataFrame) -> pd.DataFrame:
+        data[f'{self.column}_bins'] = pd.cut(data[self.column], self.bins, right=not self.sign, precision=0)
+        data = data.drop(columns="bins")
+        return data
 
-        self.init_summary = pd.DataFrame()
-        self.bin_summary = pd.DataFrame()
-        self.pvalue_summary = pd.DataFrame()
-        self.dataset = pd.DataFrame()
-        self.woe_summary = pd.DataFrame()
 
-        self.column = object
-        self.total_iv = object
-        self.bins = object
-        self.bucket = object
+class BinningTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, y: str, n_threshold: int, y_threshold: int, p_threshold: float, sign: bool = False):
+        self.y: Final[str] = y
+        self.n_threshold: Final[int] = n_threshold
+        self.y_threshold: Final[int] = y_threshold
+        self.p_threshold: Final[float] = p_threshold
+        self.sign: Final[bool] = sign
+        self.columns: Optional[List[str]] = None
+        self.bins_summary_: Optional[Dict[str, pd.DataFrame]] = None
+        self.woe_summary_: Optional[Dict[str, pd.DataFrame]] = None
 
-    def generate_summary(self):
-        self.init_summary = self.dataset.groupby([self.column]).agg({self.y: ["mean", "size", "std"]})
-        self.init_summary = self.init_summary.reset_index().droplevel(level=0, axis=1)
-        self.init_summary.columns = [self.column, "means", "nsamples", "std_dev"]
-        self.init_summary["del_flag"] = 0
-        self.init_summary["std_dev"] = self.init_summary["std_dev"].fillna(0)
-        self.init_summary = self.init_summary.sort_values([self.column], ascending=self.sign)
+    def initialize_summary(self, dataset: pd.DataFrame, column: str) -> pd.DataFrame:
+        summary = dataset.groupby([column]).agg({self.y: ["mean", "size", "std"]})
+        summary = summary.reset_index().droplevel(level=0, axis=1)
+        summary.columns = [column, "means", "nsamples", "std_dev"]
+        summary["del_flag"] = 0
+        summary["std_dev"] = summary["std_dev"].fillna(0)
+        return summary.sort_values([column], ascending=self.sign)
 
-    def combine_bins(self):
-        summary = self.init_summary.copy()
-
+    def combine_bins(self, dataset: pd.DataFrame, column: str) -> pd.DataFrame:
+        summary = self.initialize_summary(dataset, column)
         while True:
             i = 0
             summary = summary[summary.del_flag != 1]
             summary = summary.reset_index(drop=True)
             while True:
-
                 j = i + 1
-
                 if j >= len(summary):
                     break
-
                 if summary.iloc[j].means < summary.iloc[i].means:
                     i = i + 1
                     continue
@@ -64,12 +61,10 @@ class Binning(BaseEstimator, TransformerMixin):
                         else:
                             s = np.sqrt((summary.iloc[j].nsamples * (summary.iloc[j].std_dev ** 2) +
                                          summary.iloc[i].nsamples * (summary.iloc[i].std_dev ** 2)) / n)
-
                         summary.loc[i, "nsamples"] = n
                         summary.loc[i, "means"] = m
                         summary.loc[i, "std_dev"] = s
                         summary.loc[j, "del_flag"] = 1
-
                         j = j + 1
                         if j >= len(summary):
                             break
@@ -82,10 +77,10 @@ class Binning(BaseEstimator, TransformerMixin):
             if dels == 0:
                 break
 
-        self.bin_summary = summary.copy()
+        return summary
 
-    def calculate_pvalues(self):
-        summary = self.bin_summary.copy()
+    def calculate_pvalues(self, bin_summary: pd.DataFrame) -> pd.DataFrame:
+        summary = bin_summary.copy()
         while True:
             summary["means_lead"] = summary["means"].shift(-1)
             summary["nsamples_lead"] = summary["nsamples"].shift(-1)
@@ -127,10 +122,12 @@ class Binning(BaseEstimator, TransformerMixin):
             summary["std_dev"] = summary.apply(
                 lambda row: np.sqrt(row["est_std_dev2"]) if row["p_value"] == max_p else row["std_dev"], axis=1)
 
-        self.pvalue_summary = summary.copy()
+        return summary
 
-    def calculate_woe(self):
-        woe_summary = self.pvalue_summary[[self.column, "nsamples", "means"]]
+    @staticmethod
+    def calculate_woe(pvalue_summary: pd.DataFrame,
+                      column: str) -> Tuple[Union[int, Iterable[int]], pd.DataFrame]:
+        woe_summary = pvalue_summary[[column, "nsamples", "means"]]
 
         woe_summary["bads"] = woe_summary["means"] * woe_summary["nsamples"]
         woe_summary["goods"] = woe_summary["nsamples"] - woe_summary["bads"]
@@ -141,53 +138,64 @@ class Binning(BaseEstimator, TransformerMixin):
         woe_summary["dist_good"] = woe_summary["goods"] / total_goods
         woe_summary["dist_bad"] = woe_summary["bads"] / total_bads
 
-        woe_summary["WOE_" + self.column] = np.log(woe_summary["dist_good"] / woe_summary["dist_bad"])
+        woe_summary[f'WOE_{column}'] = np.log(woe_summary["dist_good"] / woe_summary["dist_bad"])
 
-        woe_summary["IV_components"] = (woe_summary["dist_good"] - woe_summary["dist_bad"]) * woe_summary[
-            "WOE_" + self.column]
+        woe_summary["IV_components"] = ((woe_summary["dist_good"] - woe_summary["dist_bad"])
+                                        * woe_summary[f'WOE_{column}'])
 
-        self.total_iv = np.sum(woe_summary["IV_components"])
-        self.woe_summary = woe_summary
+        total_iv = np.sum(woe_summary["IV_components"])
 
-    def generate_bin_labels(self,row):
-        return "-".join(map(str, np.sort([row[self.column], row[self.column + "_shift"]])))
+        return total_iv, woe_summary
 
-    def generate_final_dataset(self):
-        if self.sign == False:
-            shift_var = 1
-            self.bucket = True
+    @staticmethod
+    def generate_bin_labels(row: pd.DataFrame, column: str) -> str:
+        return "-".join(map(str, np.sort([row[column], row[f'{column}_shift']])))
+
+    def generate_final_dataset(self, dataset: pd.DataFrame, column: str, woe_summary: pd.DataFrame) -> BinningResult:
+        shift_var = -1 if self.sign else 1
+
+        woe_summary[str(column) + "_shift"] = woe_summary[column].shift(shift_var)
+
+        if self.sign:
+            woe_summary.loc[len(woe_summary) - 1, str(column) + "_shift"] = np.inf
+            bins = np.sort(list(woe_summary[column]) + [np.Inf, -np.Inf])
         else:
-            shift_var = -1
-            self.bucket = False
+            woe_summary.loc[0, str(column) + "_shift"] = -np.inf
+            bins = np.sort(list(woe_summary[column]) + [np.Inf, -np.Inf])
 
-        self.woe_summary[self.column + "_shift"] = self.woe_summary[self.column].shift(shift_var)
+        woe_summary["labels"] = woe_summary.apply(lambda x: self.generate_bin_labels(x, column), axis=1)
 
-        if self.sign == False:
-            self.woe_summary.loc[0, self.column + "_shift"] = -np.inf
-            self.bins = np.sort(list(self.woe_summary[self.column]) + [np.Inf,-np.Inf])
-        else:
-            self.woe_summary.loc[len(self.woe_summary) - 1, self.column + "_shift"] = np.inf
-            self.bins = np.sort(list(self.woe_summary[self.column]) + [np.Inf,-np.Inf])
+        dataset["bins"] = pd.cut(dataset[column], bins, right=not self.sign, precision=0)
 
-        self.woe_summary["labels"] = self.woe_summary.apply(self.generate_bin_labels, axis=1)
+        dataset["bins"] = dataset["bins"].astype(str)
+        dataset["bins"] = dataset['bins'].map(lambda x: x.lstrip('[').rstrip(')'))
 
-        self.dataset["bins"] = pd.cut(self.dataset[self.column], self.bins, right=self.bucket, precision=0)
+        return BinningResult(bins, column, self.sign)
 
-        self.dataset["bins"] = self.dataset["bins"].astype(str)
-        self.dataset["bins"] = self.dataset['bins'].map(lambda x: x.lstrip('[').rstrip(')'))
-
-    def fit(self, dataset, column):
-        self.dataset = dataset
-        self.column = column#self.dataset.columns[self.dataset.columns != self.y][0]
-
-        self.generate_summary()
-        self.combine_bins()
-        self.calculate_pvalues()
-        self.calculate_woe()
-        self.generate_final_dataset()
+    def fit(self, dataset: pd.DataFrame, y: Any = None) -> 'BinningTransformer':
+        self.columns = dataset.columns.tolist()
+        self.woe_summary_ = {}
+        for column in self.columns:
+            bins_summary = self.combine_bins(dataset, column)
+            pvalues_summary = self.calculate_pvalues(bins_summary)
+            _, woe_summary = self.calculate_woe(pvalues_summary, column)
+            self.woe_summary_[column] = woe_summary
         return self
 
-    def transform(self, test_data):
-        test_data[self.column+"_bins"] = pd.cut(test_data[self.column], self.bins, right=self.bucket, precision=0)
-        test_data = test_data.drop(columns="bins")
-        return test_data
+    def transform(self, dataset: pd.DataFrame) -> pd.DataFrame:
+        for column in self.columns:
+            dataset = self.generate_final_dataset(dataset, column, self.woe_summary_[column]).transform(dataset)
+        return dataset
+
+    def get_feature_names_out(self, input_features: Optional[List[str]] = None) -> List[str]:
+        output_features = []
+        for column in self.columns:
+            output_features.append(f'{column}_bins')
+        return output_features
+
+    def fit_transform_one_column(self, dataset: pd.DataFrame, column: str) -> 'BinningResult':
+        bins_summary = self.combine_bins(dataset, column)
+        pvalues_summary = self.calculate_pvalues(bins_summary)
+        (_, woe_summary) = self.calculate_woe(pvalues_summary, column)
+        return self.generate_final_dataset(dataset, column, woe_summary).transform(dataset)
+
